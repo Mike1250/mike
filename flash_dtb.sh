@@ -1,19 +1,16 @@
 #!/bin/sh
-# BusyBox-compatible DTB updater.
-# Downloads dtb.img, backs up /dev/dtb, and flashes using dd.
-# The downloaded image and this script are removed when it exits.
+# BusyBox-compatible DTB updater (NO BACKUP).
+# Downloads dtb.img, flashes /dev/dtb, and removes temporary files.
 
 set -eu
 
 URL='https://raw.githubusercontent.com/Mike1250/mike/refs/heads/main/dtb.img'
 DEVICE='/dev/dtb'
 IMAGE="/tmp/dtb_flash_$$.img"
-BACKUP_DIR="${BACKUP_DIR:-/root}"
-BACKUP="${BACKUP_DIR%/}/dtb-backup-$(date +%Y%m%d-%H%M%S).img"
 
 cleanup() {
     rm -f "$IMAGE"
-    # Only self-delete when invoked from the temporary directory.
+    # Remove the downloaded script only when it lives under /tmp.
     case "$0" in
         /tmp/*.sh) rm -f "$0" ;;
     esac
@@ -28,10 +25,6 @@ if [ ! -b "$DEVICE" ] && [ ! -c "$DEVICE" ]; then
     echo "ERROR: $DEVICE is not a block or character device." >&2
     exit 1
 fi
-if [ ! -d "$BACKUP_DIR" ] || [ ! -w "$BACKUP_DIR" ]; then
-    echo "ERROR: Backup directory is not writable: $BACKUP_DIR" >&2
-    exit 1
-fi
 
 printf '%s\n' 'Downloading DTB image...'
 if command -v wget >/dev/null 2>&1; then
@@ -44,29 +37,29 @@ else
 fi
 
 if [ ! -s "$IMAGE" ]; then
-    echo 'ERROR: Downloaded DTB is empty.' >&2
+    echo 'ERROR: Downloaded DTB image is empty.' >&2
     exit 1
 fi
-
-printf 'Backing up %s to %s ...\n' "$DEVICE" "$BACKUP"
-dd if="$DEVICE" of="$BACKUP" bs=1M || {
-    echo 'ERROR: Backup failed. The DTB was not flashed.' >&2
-    rm -f "$BACKUP"
-    exit 1
-}
-sync
 
 IMAGE_SIZE=$(wc -c < "$IMAGE")
-BACKUP_SIZE=$(wc -c < "$BACKUP")
-if [ "$BACKUP_SIZE" -eq 0 ] || [ "$IMAGE_SIZE" -gt "$BACKUP_SIZE" ]; then
-    echo "ERROR: Image size ($IMAGE_SIZE bytes) exceeds readable DTB partition ($BACKUP_SIZE bytes), or the backup is empty." >&2
-    echo "Backup kept at: $BACKUP" >&2
-    exit 1
+
+# Check capacity when the device exposes it (not always available on Enigma2).
+DEVICE_SIZE=''
+if [ -b "$DEVICE" ] && command -v blockdev >/dev/null 2>&1; then
+    DEVICE_SIZE=$(blockdev --getsize64 "$DEVICE" 2>/dev/null || true)
 fi
+case "$DEVICE_SIZE" in
+    ''|*[!0-9]*) ;;
+    *)
+        if [ "$DEVICE_SIZE" -gt 0 ] && [ "$IMAGE_SIZE" -gt "$DEVICE_SIZE" ]; then
+            echo "ERROR: DTB image ($IMAGE_SIZE bytes) exceeds device size ($DEVICE_SIZE bytes)." >&2
+            exit 1
+        fi
+        ;;
+esac
 
 printf 'Flashing %s (%s bytes) to %s ...\n' "$IMAGE" "$IMAGE_SIZE" "$DEVICE"
 dd if="$IMAGE" of="$DEVICE" bs=1M
 sync
 printf '%s\n' 'DTB flash completed successfully.'
-printf 'Original DTB backup saved at: %s\n' "$BACKUP"
-printf '%s\n' 'Downloaded files will be removed automatically.'
+printf '%s\n' 'Temporary files will be removed automatically.'
